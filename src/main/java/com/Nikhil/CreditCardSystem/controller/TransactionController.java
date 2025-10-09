@@ -9,7 +9,12 @@ import com.Nikhil.CreditCardSystem.exception.ResourceNotFoundException;
 import com.Nikhil.CreditCardSystem.repo.CreditCardRepository;
 import com.Nikhil.CreditCardSystem.repo.CustomerRepository;
 import com.Nikhil.CreditCardSystem.service.TransactionService;
+import com.Nikhil.CreditCardSystem.service.UserActionLogService;
 import com.Nikhil.CreditCardSystem.util.ResponseStructure;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,17 +33,22 @@ import java.util.stream.Collectors;
 @RestController
 @RequestMapping("/api/transactions")
 public class TransactionController {
+    @Autowired
+    private UserActionLogService userActionLogService;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(TransactionController.class);
 
-    @Autowired
-    private TransactionService transactionService;
+    private final CustomerRepository customerRepository;
+    private final CreditCardRepository creditCardRepository;
+    private final TransactionService transactionService;
 
-    @Autowired
-    private CustomerRepository customerRepository;
-
-    @Autowired
-    private CreditCardRepository creditCardRepository;
+    public TransactionController(CustomerRepository customerRepository,
+                                 CreditCardRepository creditCardRepository,
+                                 TransactionService transactionService) {
+        this.customerRepository = customerRepository;
+        this.creditCardRepository = creditCardRepository;
+        this.transactionService = transactionService;
+    }
 
     /**
      * 📄 API: Get all transactions for a specific user (across all their credit cards)
@@ -49,36 +59,52 @@ public class TransactionController {
      *      - userId (Long): ID of the user
      * Response: List of TransactionDto objects.
      */
+
+    // ✅ 1️⃣ Get all transactions for a user
+    @Operation(
+            summary = "Get all transactions for a specific user",
+            description = "Retrieves all transactions made by a user across all their credit cards."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Transactions fetched successfully"),
+            @ApiResponse(responseCode = "404", description = "User not found")
+    })
     @PreAuthorize("hasRole('USER')")
     @GetMapping("/user/{userId}")
-    public ResponseEntity<ResponseStructure<List<TransactionDto>>> getAllTransactionsByUser(@PathVariable Long userId) {
+    public ResponseEntity<ResponseStructure<List<TransactionDto>>> getAllTransactionsByUser(
+            @Parameter(description = "User ID for which to fetch transactions", example = "1")
+            @PathVariable Long userId) {
+
         LOGGER.info("Fetching all transactions for user ID: {}", userId);
 
-        Customer customer = customerRepository.findById(userId)
-                .orElseThrow(() -> {
-                    LOGGER.warn("User with ID {} not found", userId);
-                    return new ResourceNotFoundException("User not found");
-                });
-
-        List<TransactionDto> transactionDtos = customer.getCreditCards().stream()
-                .flatMap(card -> card.getTransactions().stream())
-                .map(transactionService::toDto)
-                .collect(Collectors.toList());
-
-        LOGGER.info("Found {} transactions for user ID: {}", transactionDtos.size(), userId);
-
-        String message ;
-        if (transactionDtos.isEmpty()) {
-             message = "No transactions found for user ID: " + userId;
-        } else {
-             message = "Found " + transactionDtos.size() + " transactions for user ID: " + userId;
-        }
-
         ResponseStructure<List<TransactionDto>> response = new ResponseStructure<>();
-        response.setMessage("Transactions fetched successfully " + message);
-//        response.setHttpstatus(HttpStatus.OK.value());
-        response.setHttpstatus("SUCCESS");
-        response.setData(transactionDtos);
+        try {
+            Customer customer = customerRepository.findById(userId)
+                    .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+            List<TransactionDto> transactionDtos = customer.getCreditCards().stream()
+                    .flatMap(card -> card.getTransactions().stream())
+                    .map(transactionService::toDto)
+                    .collect(Collectors.toList());
+
+            String message = transactionDtos.isEmpty()
+                    ? "No transactions found for user ID: " + userId
+                    : "Found " + transactionDtos.size() + " transactions for user ID: " + userId;
+
+            response.setMessage(message);
+            response.setHttpstatus("SUCCESS");
+            response.setData(transactionDtos);
+
+            // Use username from fetched customer entity
+            userActionLogService.logAction(customer.getName(), "Fetch all transactions for userId " + userId, "SUCCESS");
+
+        } catch (Exception e) {
+            // Attempt to log failed action with userId as fallback
+            String username = customerRepository.findById(userId)
+                    .map(Customer::getName)
+                    .orElse("Unknown");
+            userActionLogService.logAction(username, "Fetch all transactions for userId " + userId, "FAILED");
+            throw e;
+        }
 
         return ResponseEntity.ok(response);
     }
@@ -92,40 +118,52 @@ public class TransactionController {
      *      - cardId (Long): ID of the credit card
      * Response: List of TransactionDto objects.
      */
+
+    // ✅ 2️⃣ Get all transactions for a credit card
+    @Operation(
+            summary = "Get all transactions for a specific credit card",
+            description = "Retrieves all transactions linked to a specific credit card."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Transactions fetched successfully"),
+            @ApiResponse(responseCode = "404", description = "Credit card not found")
+    })
     @PreAuthorize("hasRole('USER')")
     @GetMapping("/card/{cardId}")
-    public ResponseEntity<ResponseStructure<List<TransactionDto>>> getTransactionsByCard(@PathVariable Long cardId) {
+    public ResponseEntity<ResponseStructure<List<TransactionDto>>> getTransactionsByCard(
+            @Parameter(description = "Credit card ID to fetch transactions for", example = "101")
+            @PathVariable Long cardId) {
+
         LOGGER.info("Fetching transactions for card ID: {}", cardId);
-
-        CreditCard card = creditCardRepository.findById(cardId)
-                .orElseThrow(() -> {
-                    LOGGER.warn("Card with ID {} not found", cardId);
-                    return new ResourceNotFoundException("Card not found");
-                });
-
-        List<TransactionDto> transactionDtos = card.getTransactions().stream()
-                .map(transactionService::toDto)
-                .collect(Collectors.toList());
-
-        LOGGER.info("Found {} transactions for card ID: {}", transactionDtos.size(), cardId);
-
-
-        String message;
-        if (transactionDtos.isEmpty()) {
-            message = "Found 0 transactions for user ID: " + cardId;
-        } else {
-            message = "Found " + transactionDtos.size() + " transactions for user ID: " + cardId;
-        }
-
-
         ResponseStructure<List<TransactionDto>> response = new ResponseStructure<>();
-        response.setMessage("Transactions fetched successfully " + message);
-//        response.setHttpstatus(HttpStatus.OK.value());
-        response.setHttpstatus("SUCCESS");
-        response.setData(transactionDtos);
+        try {
+            CreditCard card = creditCardRepository.findById(cardId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Card not found"));
+            List<TransactionDto> transactionDtos = card.getTransactions().stream()
+                    .map(transactionService::toDto)
+                    .collect(Collectors.toList());
+
+            String message = transactionDtos.isEmpty()
+                    ? "No transactions found for card ID: " + cardId
+                    : "Found " + transactionDtos.size() + " transactions for card ID: " + cardId;
+
+            response.setMessage(message);
+            response.setHttpstatus("SUCCESS");
+            response.setData(transactionDtos);
+
+            // Get username from card owner
+            userActionLogService.logAction(card.getCustomer().getName(), "Fetch transactions for cardId " + cardId, "SUCCESS");
+
+        } catch (Exception e) {
+            // Attempt to log failed action with cardId as fallback
+            creditCardRepository.findById(cardId).ifPresent(card ->
+                    userActionLogService.logAction(card.getCustomer().getName(), "Fetch transactions for cardId " + cardId, "FAILED"));
+            throw e;
+        }
 
         return ResponseEntity.ok(response);
     }
+
 
     /**
      * 📄 API: Get all CREDIT transactions for a specific user (across all their credit cards)
@@ -136,32 +174,54 @@ public class TransactionController {
      *      - userId (Long): ID of the user
      * Response: List of TransactionDto objects filtered by type "CREDIT".
      */
+
+    // ✅ 3️⃣ Get all CREDIT transactions for a user
+    @Operation(
+            summary = "Get all CREDIT transactions for a user",
+            description = "Retrieves all credit transactions made by a user across all their credit cards."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Credit transactions fetched successfully"),
+            @ApiResponse(responseCode = "404", description = "User not found")
+    })
     @PreAuthorize("hasRole('USER')")
     @GetMapping("/user/{userId}/credits")
-    public ResponseEntity<ResponseStructure<List<TransactionDto>>> getAllCreditTransactionsByUser(@PathVariable Long userId) {
+    public ResponseEntity<ResponseStructure<List<TransactionDto>>> getAllCreditTransactionsByUser(
+            @Parameter(description = "User ID for fetching credit transactions", example = "1")
+            @PathVariable Long userId) {
+
         LOGGER.info("Fetching all CREDIT transactions for user ID: {}", userId);
-
-        Customer customer = customerRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
-
-        List<TransactionDto> creditTransactions = customer.getCreditCards().stream()
-                .flatMap(card -> card.getTransactions().stream())
-                .filter(txn -> "CREDIT".equalsIgnoreCase(txn.getTransactionType()))
-                .map(transactionService::toDto)
-                .collect(Collectors.toList());
-
-        String message = creditTransactions.isEmpty()
-                ? "No credit transactions found for user ID: " + userId
-                : "Found " + creditTransactions.size() + " credit transactions for user ID: " + userId;
-
         ResponseStructure<List<TransactionDto>> response = new ResponseStructure<>();
-        response.setMessage(message);
-        response.setHttpstatus("SUCCESS");
-        response.setData(creditTransactions);
+        try {
+            Customer customer = customerRepository.findById(userId)
+                    .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+
+            List<TransactionDto> creditTransactions = customer.getCreditCards().stream()
+                    .flatMap(card -> card.getTransactions().stream())
+                    .filter(txn -> "CREDIT".equalsIgnoreCase(txn.getTransactionType()))
+                    .map(transactionService::toDto)
+                    .collect(Collectors.toList());
+
+            String message = creditTransactions.isEmpty()
+                    ? "No credit transactions found for user ID: " + userId
+                    : "Found " + creditTransactions.size() + " credit transactions for user ID: " + userId;
+
+            response.setMessage(message);
+            response.setHttpstatus("SUCCESS");
+            response.setData(creditTransactions);
+
+            userActionLogService.logAction(customer.getName(), "Fetch CREDIT transactions for userId " + userId, "SUCCESS");
+
+        } catch (Exception e) {
+            String username = customerRepository.findById(userId)
+                    .map(Customer::getName)
+                    .orElse("Unknown");
+            userActionLogService.logAction(username, "Fetch CREDIT transactions for userId " + userId, "FAILED");
+            throw e;
+        }
 
         return ResponseEntity.ok(response);
     }
-
 
     /**
      * 📄 API: Get all DEBIT transactions for a specific user (across all their credit cards)
@@ -172,28 +232,51 @@ public class TransactionController {
      *      - userId (Long): ID of the user
      * Response: List of TransactionDto objects filtered by type "DEBIT".
      */
+
+    // ✅ 4️⃣ Get all DEBIT transactions for a user
+    @Operation(
+            summary = "Get all DEBIT transactions for a user",
+            description = "Retrieves all debit transactions made by a user across all their credit cards."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Debit transactions fetched successfully"),
+            @ApiResponse(responseCode = "404", description = "User not found")
+    })
     @PreAuthorize("hasRole('USER')")
     @GetMapping("/user/{userId}/debits")
-    public ResponseEntity<ResponseStructure<List<TransactionDto>>> getAllDebitTransactionsByUser(@PathVariable Long userId) {
+    public ResponseEntity<ResponseStructure<List<TransactionDto>>> getAllDebitTransactionsByUser(
+            @Parameter(description = "User ID for fetching debit transactions", example = "1")
+            @PathVariable Long userId) {
+
         LOGGER.info("Fetching all DEBIT transactions for user ID: {}", userId);
-
-        Customer customer = customerRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
-
-        List<TransactionDto> debitTransactions = customer.getCreditCards().stream()
-                .flatMap(card -> card.getTransactions().stream())
-                .filter(txn -> "DEBIT".equalsIgnoreCase(txn.getTransactionType()))
-                .map(transactionService::toDto)
-                .collect(Collectors.toList());
-
-        String message = debitTransactions.isEmpty()
-                ? "No debit transactions found for user ID: " + userId
-                : "Found " + debitTransactions.size() + " debit transactions for user ID: " + userId;
-
         ResponseStructure<List<TransactionDto>> response = new ResponseStructure<>();
-        response.setMessage(message);
-        response.setHttpstatus("SUCCESS");
-        response.setData(debitTransactions);
+        try {
+            Customer customer = customerRepository.findById(userId)
+                    .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+
+            List<TransactionDto> debitTransactions = customer.getCreditCards().stream()
+                    .flatMap(card -> card.getTransactions().stream())
+                    .filter(txn -> "DEBIT".equalsIgnoreCase(txn.getTransactionType()))
+                    .map(transactionService::toDto)
+                    .collect(Collectors.toList());
+
+            String message = debitTransactions.isEmpty()
+                    ? "No debit transactions found for user ID: " + userId
+                    : "Found " + debitTransactions.size() + " debit transactions for user ID: " + userId;
+
+            response.setMessage(message);
+            response.setHttpstatus("SUCCESS");
+            response.setData(debitTransactions);
+
+            userActionLogService.logAction(customer.getName(), "Fetch DEBIT transactions for userId " + userId, "SUCCESS");
+
+        } catch (Exception e) {
+            String username = customerRepository.findById(userId)
+                    .map(Customer::getName)
+                    .orElse("Unknown");
+            userActionLogService.logAction(username, "Fetch DEBIT transactions for userId " + userId, "FAILED");
+            throw e;
+        }
 
         return ResponseEntity.ok(response);
     }
